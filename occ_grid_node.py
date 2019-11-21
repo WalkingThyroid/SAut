@@ -11,6 +11,8 @@ from geometry_msgs.msg import Twist
 
 # to be able to subscribe to the ground truth pose
 from nav_msgs.msg import Odometry
+from nav_msgs.msg import OccupancyGrid
+from tf.transformations import euler_from_quaternion
 
 import math
 import numpy as np
@@ -18,13 +20,15 @@ import numpy as np
 class grid_map(object):
 
 	def __init__(self):
+
+		self.occ_pub = rospy.Publisher("/mbot/occMap", OccupancyGrid, queue_size = 10)
 	
-		self.height = 10
-		self.width = 10
-		self.res = 4
+		self.height = 10 # metric (should probably be in cells
+		self.width = 10 # same as height
+		self.res = 4 # it's in cell/m, should probably be in m/cell
 		self.pose = [0,0,0]
 		
-		self.alpha = 0.5
+		self.alpha = 1
 		self.beta = 5*np.pi/360 # 5 degrees
 		self.z_max = 10  # initialized on update
 		
@@ -34,56 +38,124 @@ class grid_map(object):
 	
 		# initialize grid
 		self.grid = np.ndarray( (self.height*self.res,self.width*self.res), dtype=float)
-		self.grid.fill(-1) # unkown
-		# self.x = 
+		self.grid.fill(0.5) # -1 is unkown
+		
+		'''self.grid_x = np.ndarray( (self.height*self.res,self.width*self.res), dtype=float) # deepcopy?
+		it = np.nditer(self.grid_x, flags=['multi_index'])
+		while not it.finished:
+			self.grid_x(it.multi_index(0), it.multi_index(1)) = it.multi_index(0)*(1/self.res) + 1/(self.res * 2)
+			it.iternext()''' # maybe a pre-calculated matrix with coordinates
+
 		
 	def update_pose(self, msg):
 		
 		self.pose[0] = msg.pose.pose.position.x
 		self.pose[1] = msg.pose.pose.position.y
-		self.pose[2] = msg.pose.pose.orientation.z
+
+		orientation = msg.pose.pose.orientation
+		(roll, pitch, yaw) = euler_from_quaternion([orientation.x, orientation.y, orientation.z, orientation.w])
+		self.pose[2] = yaw
 
 	def update(self, msg):
-	
+
 		self.z_max = msg.range_max
 		it = np.nditer(self.grid, flags=['multi_index'])
 		while not it.finished:
-			self.inv_model(it.multi_index, msg)
+			self.grid[it.multi_index] += self.inv_model(it.multi_index, msg)
 			it.iternext()
+		self.publish_map()
 		self.print_map_to_file()
 			
 	def inv_model(self, cell, msg):
 
-		pose = self.pose
+		pose = self.world_to_grid(self.pose)
+		print("Pose: " + str(pose))
+		cell_pos = self.get_cell_pos(cell)
+		print("Cell position: " + str(cell_pos))
+		
+		pose[2] = self.pose[2]
 		theta = pose[2]
 		
-		r = math.sqrt((cell[0] - pose[0])**2 + (cell[1] - pose[1])**2)
-		phi = math.atan2((cell[1] - pose[1]), (cell[0] - pose[0])) - theta
+		r = math.sqrt((cell_pos[0] - pose[0])**2 + (cell_pos[1] - pose[1])**2)
+		print("r = " + str(r))
+		phi = math.atan2((cell_pos[1] - pose[1]), (cell_pos[0] - pose[0])) - theta
+		print("phi = " + str(phi))
+
 		ang_dif = []
 		ang = np.arange(msg.angle_min, msg.angle_max, msg.angle_increment)
 
 		for i in range(0,len(ang)):
+			#ang_dif.append(math.atan2( math.sin(phi - ang[i]), math.cos(phi - ang[i]))) # maybe?
 			ang_dif.append(abs( phi - ang[i]))
 
 		k = np.argmin(ang_dif)
+		#print(ang_dif)
+		print("k = " + str(k))
 
 		if r > min(self.z_max, msg.ranges[k]) or abs(phi - ang[k]) > self.beta/2:
+			#print('Out of range')
 			return self.l0
 		if msg.ranges[k] < self.z_max and abs(r - msg.ranges[k]) < self.alpha/2:
+			print('Cell' + str(cell) + ' is occupied')
 			return self.l_occ
 		if r <= msg.ranges[k]:
+			print('Cell' + str(cell) + ' is free')
 			return self.l_free
 
 	def threshold_map(self):
-		pass
+
+		self.thres_map = np.exp(self.grid) * 100 / (np.exp(self.grid) + 1)
 
 	def print_map_to_file(self):
 		
-		with open('test_map.txt', 'w') as f:
-			f.write(self.grid)
+		with open('test_map.txt','wb') as f:
+    			for line in self.thres_map:
+        			np.savetxt(f, line, fmt='%.2f')
 
-			
-	
+	def world_to_grid(self, world):
+		
+		grid_origin = [self.width / 2, self.height / 2, 0]
+		return np.add(grid_origin, world)
+
+	def grid_to_world(self, grid):
+		
+		grid_origin = [self.width / 2, self.height / 2]
+		return grid - grid_origin
+
+	def get_cell_pos(self, index):
+		'''
+		origin is at the center of the grid, cell [0,0] is 
+		at the bottom left corner
+		'''
+		pos = [0,0]
+		pos[0] = (-self.width/2.0) + ((index[1] + 1.0) / (4 * self.res))
+		pos[1] = (-self.height/2.0) + ((index[0] + 1.0) / (4 * self.res))
+		return pos
+		
+	def publish_map(self):
+
+		map_msg = OccupancyGrid()
+		map_msg.header.frame_id = 'map'
+		map_msg.info.resolution = 1.0/self.res
+		map_msg.info.width = self.width * self.res # change later (maybe change width and height to cells instead of metres)
+		map_msg.info.height = self.height * self.res # change later
+		map_msg.data = range(self.width*self.height*self.res**2)
+
+		# map origin
+		#map_msg.info.origin.position.x = self.width / 2
+		#map_msg.info.origin.position.y = self.height / 2
+		
+		# get current time
+		map_msg.header.stamp = rospy.Time.now()
+
+		# might be out of order (should be row major order)
+		self.threshold_map()
+		it = np.nditer(self.thres_map, flags=['multi_index'])
+		for i in range(self.width*self.height*self.res**2):
+			map_msg.data[i] = self.thres_map[it.multi_index]
+			it.iternext()
+
+		self.occ_pub.publish(map_msg)
 	
 class behaviour(object):
 
