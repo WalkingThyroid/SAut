@@ -13,6 +13,7 @@ from geometry_msgs.msg import Twist
 from nav_msgs.msg import Odometry
 from nav_msgs.msg import OccupancyGrid
 from tf.transformations import euler_from_quaternion
+from geometry_msgs.msg import PoseWithCovarianceStamped
 
 import math
 import numpy as np
@@ -39,6 +40,9 @@ class grid_map(object):
 		# initialize grid
 		self.grid = np.ndarray( (self.height,self.width), dtype=float)
 		self.grid.fill(0.5) # unkown (is it right?)
+
+		self.grid_x = np.arange(-self.width*self.res/2.0 + self.res/2.0, self.width*self.res/2.0, self.res)
+		self.grid_y = np.arange(self.height*self.res/2.0 - self.res/2.0, -self.height*self.res/2.0, -self.res)
 		
 		'''self.grid_x = np.ndarray( (self.height,self.width), dtype=float) # deepcopy?
 		it = np.nditer(self.grid_x, flags=['multi_index'])
@@ -60,23 +64,65 @@ class grid_map(object):
 	def update(self, msg):
 		'''Update the map after receiving message with measurements'''
 
+		pose = self.pose
 		self.z_max = msg.range_max
-		it = np.nditer(self.grid, flags=['multi_index'])
-		while not it.finished:
-			self.grid[it.multi_index] += self.inv_model(it.multi_index, msg)
-			it.iternext()
-		if it.finished:
-			print("Finished one iteration")
+
+		''' This is the rectangle approach
+		# get the square on which we want to iterate
+		theta = self.pose[2]
+		p1 = [pose[0] + self.z_max*math.cos(theta + msg.angle_min), pose[1] + self.z_max*math.sin(theta + msg.angle_min)]
+		p2 = [pose[0] + self.z_max*math.cos(theta + msg.angle_max), pose[1] + self.z_max*math.sin(theta + msg.angle_max)]
+		# calculate the box coordinates
+		x_max = max(p1[0], p2[0], pose[0])
+		x_min = min(p1[0], p2[0], pose[0])
+		y_max = max(p1[1], p2[1], pose[1])
+		y_min = min(p1[1], p2[1], pose[1])
+		'''
+
+		# get the square on which we want to iterate
+		x_max = pose[0] + self.z_max
+		x_min = pose[0] - self.z_max
+		y_max = pose[1] + self.z_max
+		y_min = pose[1] - self.z_max
+
+		# get the correct indexes of the sub-grid we want to iterate on
+		#idx = [pose[0] - self.z_max/self.res
+		idx_max = np.argmin(np.abs(self.grid_x - x_max))
+		if idx_max != self. width - 1:
+			idx_max = idx_max + 1 #This is not strictly correct, it's just to be safe
+		idx_min = np.argmin(np.abs(self.grid_x - x_min))
+		if idx_min != 0:
+			idx_min = idx_min - 1 #This is not strictly correct, it's just to be safe
+		idy_min = np.argmin(np.abs(self.grid_y - y_max))
+		if idy_min != 0:
+			idy_min = idy_min - 1 #This is not strictly correct, it's just to be safe
+		idy_max = np.argmin(np.abs(self.grid_y - y_min))
+		if idy_max != self. height - 1:
+			idy_max = idy_max + 1 #This is not strictly correct, it's just to be safe
+
+		#print(idx_min)
+		#print(idx_max)
+		#print(idy_min)
+		#print(idy_max)
+
+		for i in range(idx_min, idx_max+1):
+			for j in range(idy_min, idy_max+1):
+				self.grid[i,j] += self.inv_model([i,j], msg, pose)
+			
+		print("Finished one iteration")
 		self.publish_map()
 		#self.print_map_to_file()
 			
-	def inv_model(self, cell, msg):
+	def inv_model(self, cell, msg, pose):
 		'''Implementation of inverse model of Probabilistic Robotics'''
 
-		pose = self.world_to_grid(self.pose)
-		cell_pos = self.get_cell_pos(cell)
+		#pose = self.world_to_grid(self.pose)
+		#cell_pos = self.get_cell_pos(cell)
+		cell_pos = [self.grid_x[cell[0]], self.grid_y[cell[1]]]
+		#cell_pos.append(self.grid_x[cell[0]])
+		#cell_pos.append(self.grid_y[cell[1]])
 		
-		pose[2] = self.pose[2]
+		#pose[2] = self.pose[2]
 		theta = pose[2]
 		
 		r = math.sqrt((cell_pos[0] - pose[0])**2 + (cell_pos[1] - pose[1])**2)
@@ -88,7 +134,7 @@ class grid_map(object):
 
 		for i in range(0,len(ang)):
 			#ang_dif.append(math.atan2( math.sin(phi - ang[i]), math.cos(phi - ang[i]))) # maybe?
-			ang_dif.append(abs( phi - ang[i]))
+			ang_dif.append(abs( phi - ang[i])) # not sure about this, actually
 
 		k = np.argmin(ang_dif)
 		#print(ang_dif)
@@ -114,7 +160,7 @@ class grid_map(object):
 			#print('Cell' + str(cell) + ' is free')
 			return self.l_free
 		else:
-			print("Error:This cell is neither occupied, free or out of range")
+			#print("Error:This cell is neither occupied, free or out of range")
 			return self.l0
 
 	def threshold_map(self):
@@ -272,9 +318,9 @@ def main():
 	# print message in terminal
 	rospy.loginfo('Mbot Occupancy Grid Mapping started !')
 	# subscibe to the two laser range finders
-	rospy.Subscriber('/robot_0/base_scan_1', LaserScan, map.update)
+	rospy.Subscriber('/scan_front', LaserScan, map.update)
 	# rospy.Subscriber('/scan2')
-	rospy.Subscriber('/robot_0/base_pose_ground_truth', Odometry, map.update_pose)
+	rospy.Subscriber('/amcl_pose', PoseWithCovarianceStamped, map.update_pose)
 
 	while not rospy.is_shutdown():
 
