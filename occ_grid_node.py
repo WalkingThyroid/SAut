@@ -39,7 +39,7 @@ class grid_map(object):
 	
 		# initialize grid
 		self.grid = np.ndarray( (self.height,self.width), dtype=float)
-		self.grid.fill(0.5) # unkown (is it right?)
+		self.grid.fill(0) # unkown (is it right?)
 
 		self.grid_x = np.arange(-self.width*self.res/2.0 + self.res/2.0, self.width*self.res/2.0, self.res)
 		self.grid_y = np.arange(self.height*self.res/2.0 - self.res/2.0, -self.height*self.res/2.0, -self.res)
@@ -60,6 +60,8 @@ class grid_map(object):
 		orientation = msg.pose.pose.orientation
 		(roll, pitch, yaw) = euler_from_quaternion([orientation.x, orientation.y, orientation.z, orientation.w])
 		self.pose[2] = yaw
+
+		print("Pose was updated")
 
 	def update(self, msg):
 		'''Update the map after receiving message with measurements'''
@@ -318,9 +320,11 @@ def main():
 	# print message in terminal
 	rospy.loginfo('Mbot Occupancy Grid Mapping started !')
 	# subscibe to the two laser range finders
-	rospy.Subscriber('/scan_front', LaserScan, map.update)
+	rospy.Subscriber('/robot_0/base_scan_1', LaserScan, map.update, queue_size=1)
+	#rospy.Subscriber('/scan_front', LaserScan, map.update, queue_size=None)
 	# rospy.Subscriber('/scan2')
-	rospy.Subscriber('/amcl_pose', PoseWithCovarianceStamped, map.update_pose)
+	rospy.Subscriber('/robot_0/base_pose_ground_truth', Odometry, map.update_pose)
+	#rospy.Subscriber('/amcl_pose', PoseWithCovarianceStamped, map.update_pose)
 
 	while not rospy.is_shutdown():
 
