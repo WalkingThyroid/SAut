@@ -36,6 +36,10 @@ class grid_map(object):
 		self.l_occ = np.log(0.7/0.3)
 		self.l_free = np.log(0.3/0.7)
 		self.l0 = np.log(0.5/0.5)
+
+		# list to save both update message types
+		self.laser_msgs = []
+		self.pose_msgs = []
 	
 		# initialize grid
 		self.grid = np.ndarray( (self.height,self.width), dtype=float)
@@ -169,7 +173,8 @@ class grid_map(object):
 		#Inverts from log odds to get the probability in the interval [0,100]
 		#Does not work as intended, 0 in log odds gets mapped to 62, should be 50
 
-		self.thres_map = np.exp(self.grid) * 100 / (np.exp(self.grid) + 1)
+		odds = np.exp(self.grid)
+		self.thres_map = odds * 100 / (odds + 1)
 
 	def print_map_to_file(self):
 		'''Prints the grid map of probabilities to a text file
@@ -225,7 +230,22 @@ class grid_map(object):
 			it.iternext()
 
 		self.occ_pub.publish(map_msg)
+
+	def laser_callback(self, msg):
+		''' Save the laser message in a list '''
+		if len(self.laser_msgs) > 9:
+			self.laser_msgs = self.laser_msgs[1:]
+
+		self.laser_msgs.append(msg)
 	
+	def pose_callback(self, msg):
+		''' Save the pose message in a list '''
+		if len(self.pose_msgs) > 9:
+			self.pose_msgs = self.pose_msgs[1:]
+		self.pose_msgs.append(msg)
+
+
+
 class behaviour(object):
 
 	def __init__(self):
@@ -320,18 +340,17 @@ def main():
 	# print message in terminal
 	rospy.loginfo('Mbot Occupancy Grid Mapping started !')
 	# subscibe to the two laser range finders
-	rospy.Subscriber('/robot_0/base_scan_1', LaserScan, map.update, queue_size=1)
-	#rospy.Subscriber('/scan_front', LaserScan, map.update, queue_size=None)
+	rospy.Subscriber('/robot_0/base_scan_1', LaserScan, map.laser_callback, queue_size=1)
+	#rospy.Subscriber('/scan_front', LaserScan, map.laser_callback, queue_size=None)
 	# rospy.Subscriber('/scan2')
-	rospy.Subscriber('/robot_0/base_pose_ground_truth', Odometry, map.update_pose)
-	#rospy.Subscriber('/amcl_pose', PoseWithCovarianceStamped, map.update_pose)
+	rospy.Subscriber('/robot_0/base_pose_ground_truth', Odometry, map.pose_callback)
+	#rospy.Subscriber('/amcl_pose', PoseWithCovarianceStamped, map.pose_callback)
 
 	while not rospy.is_shutdown():
+		if map.pose_msgs and map.laser_msgs:
+			map.update_pose(map.pose_msgs[-1])
+			map.update(map.laser_msgs[-1])
 
-		pass
-
-		
-		
 		
 		
 		
